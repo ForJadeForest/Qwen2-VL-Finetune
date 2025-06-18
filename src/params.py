@@ -9,7 +9,11 @@ from trl import GRPOConfig as GRPOConfigTRL
 @dataclass
 class ModelArguments:
     model_id: Optional[str] = field(default="Qwen/Qwen2-VL-7B-Instruct")
-
+    train_deqa: bool = field(default=False)
+    level_prefix: str = field(default="")
+    level_names: list[str] = field(default_factory=lambda: [])
+    softkl_loss: bool = field(default=False)
+    weight_softkl: float = field(default=1.0)
 
 @dataclass
 class TrainingArguments(HFTrainingArguments):
