@@ -191,3 +191,10 @@ class QwenSFTTrainer(Trainer):
     #             print(f"Training parameter {name}")
     # 
     #     return super().training_step(model, inputs)
+
+
+class QwenDEQATrainer(QwenSFTTrainer):
+    def __init__(self, *args, **kwargs):
+        super(QwenDEQATrainer, self).__init__(*args, **kwargs)
+
+    
