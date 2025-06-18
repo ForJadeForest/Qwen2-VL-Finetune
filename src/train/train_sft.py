@@ -67,7 +67,7 @@ def train():
     use_liger = training_args.use_liger
     if "Qwen2.5" in model_args.model_id:
         # It monkey patches the forward to handle mixed modality inputs.
-        replace_qwen2_5_with_mixed_modality_forward(use_liger=use_liger)
+        # replace_qwen2_5_with_mixed_modality_forward(use_liger=use_liger)
         # This is becuase mixed-modality training monkey-patches the model forward method.
         if use_liger:
             apply_liger_kernel_to_qwen2_5_vl(fused_linear_cross_entropy=False)
@@ -116,14 +116,34 @@ def train():
                 bnb_4bit_quant_type=training_args.quant_type,
             )
         ))
-
+    
+    processor = AutoProcessor.from_pretrained(model_args.model_id)
     if "Qwen2.5" in model_args.model_id:
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            model_args.model_id,
-            torch_dtype=compute_dtype,
-            attn_implementation="flash_attention_2" if not training_args.disable_flash_attn2 else "sdpa", 
-            **bnb_model_from_pretrained_args
-        )
+        if model_args.train_deqa:
+            from src.models.qwen25_vl_deqa import Qwen2_5_VLForDEQA
+            assert training_args.level_prefix is not None and training_args.level_names is not None
+
+            level_prefix = processor.tokenizer(training_args.level_prefix).input_ids[1:]
+            for level_name in training_args.level_names:
+                level_id = processor.tokenizer(level_name)["input_ids"]
+                assert len(level_id) == 2 and level_id[0] == 1
+            level_ids = [id_[1] for id_ in processor.tokenizer(training_args.level_names).input_ids]
+            model = Qwen2_5_VLForDEQA.from_pretrained(
+                model_args.model_id,
+                torch_dtype=compute_dtype,
+                attn_implementation="flash_attention_2" if not training_args.disable_flash_attn2 else "sdpa", 
+                **bnb_model_from_pretrained_args,
+                weight_softkl=training_args.weight_softkl,
+                level_ids=level_ids,
+                level_prefix=level_prefix
+            )
+        else:
+            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                model_args.model_id,
+                torch_dtype=compute_dtype,
+                attn_implementation="flash_attention_2" if not training_args.disable_flash_attn2 else "sdpa", 
+                **bnb_model_from_pretrained_args
+            )
     else:
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_args.model_id,
@@ -178,7 +198,7 @@ def train():
                 if "merger" in name:
                     param.requires_grad = True
 
-    processor = AutoProcessor.from_pretrained(model_args.model_id)
+    
 
     # model.config.tokenizer_model_max_length = processor.tokenizer.model_max_length
 
@@ -195,10 +215,19 @@ def train():
                 if hasattr(module, 'weight'):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
-
-    data_module = make_supervised_data_module(model_id=model_args.model_id,
-                                              processor=processor,
-                                              data_args=data_args)
+    if model_args.train_deqa:
+        from src.dataset.single_dataset import make_single_data_module
+        data_module = make_single_data_module(
+            model_id=model_args.model_id,
+            processor=processor,
+            data_args=data_args
+        )
+    else:
+        data_module = make_supervised_data_module(
+            model_id=model_args.model_id,
+            processor=processor,
+            data_args=data_args
+        )
 
     trainer = QwenSFTTrainer(
         model=model,
