@@ -4,7 +4,6 @@ import torch
 import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
 from transformers import Qwen2_5_VLForConditionalGeneration
-from transformers.modeling_utils import can_return_tuple
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VLCausalLMOutputWithPast,
 )
@@ -18,7 +17,6 @@ class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
         self.level_ids = level_ids
         self.level_prefix = level_prefix
 
-    @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -107,7 +105,12 @@ class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
         return_dict = (
             return_dict if return_dict is not None else self.config.use_return_dict
         )
-
+        print(
+            f"input_ids: {input_ids.shape}\n\n"
+            f"pixel_values: {pixel_values.shape}\n\n"
+            f"image_grid_thw: {image_grid_thw.shape}\n\n"
+            f"attention_mask: {attention_mask.shape}\n\n"
+        )
         outputs = self.model(
             input_ids=input_ids,
             pixel_values=pixel_values,
@@ -173,6 +176,7 @@ class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
+        print(f"loss: {loss}, loss_kl: {loss_kl}, self.weight_softkl: {self.weight_softkl}")
         loss = loss + self.weight_softkl * loss_kl
         return Qwen2_5_VLCausalLMOutputWithPast(
             loss=loss,

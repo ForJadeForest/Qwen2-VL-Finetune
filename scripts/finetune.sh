@@ -6,7 +6,7 @@
 # MODEL_NAME="Qwen/Qwen2.5-VL-3B-Instruct"
 MODEL_NAME="Qwen/Qwen2.5-VL-7B-Instruct"
 
-GLOBAL_BATCH_SIZE=64
+GLOBAL_BATCH_SIZE=8
 
 BATCH_PER_DEVICE=1
 NUM_DEVICES=8
@@ -47,7 +47,10 @@ deepspeed src/train/train_sft.py \
     --save_strategy "steps" \
     --save_steps 200 \
     --save_total_limit 10 \
-    --dataloader_num_workers 4 \
+    --dataloader_num_workers 16 \
     --level_prefix "The quality of the image is" \
-    --level_names excellent good fair poor bad \
-    --softkl_loss True
+    --level_names five four three two one \
+    --softkl_loss True \
+    --train_deqa
+
+

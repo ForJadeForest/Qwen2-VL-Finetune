@@ -119,15 +119,18 @@ def train():
     
     processor = AutoProcessor.from_pretrained(model_args.model_id)
     if "Qwen2.5" in model_args.model_id:
-        if model_args.train_deqa:
+        if training_args.train_deqa:
             from src.models.qwen25_vl_deqa import Qwen2_5_VLForDEQA
             assert training_args.level_prefix is not None and training_args.level_names is not None
 
             level_prefix = processor.tokenizer(training_args.level_prefix).input_ids[1:]
             for level_name in training_args.level_names:
                 level_id = processor.tokenizer(level_name)["input_ids"]
-                assert len(level_id) == 2 and level_id[0] == 1
-            level_ids = [id_[1] for id_ in processor.tokenizer(training_args.level_names).input_ids]
+                print(processor.tokenizer.decode(level_id, skip_special_tokens=False))
+                print(f"level_id: {level_id}, level_name: {level_name}")
+                assert len(level_id) == 1, f"level_id: {level_id}, level_name: {level_name}"
+            level_ids = [id_[0] for id_ in processor.tokenizer(training_args.level_names).input_ids]
+            print(f"level_ids: {level_ids}, {processor.tokenizer.decode(level_ids, skip_special_tokens=False)}")
             model = Qwen2_5_VLForDEQA.from_pretrained(
                 model_args.model_id,
                 torch_dtype=compute_dtype,
@@ -215,7 +218,7 @@ def train():
                 if hasattr(module, 'weight'):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
-    if model_args.train_deqa:
+    if training_args.train_deqa:
         from src.dataset.single_dataset import make_single_data_module
         data_module = make_single_data_module(
             model_id=model_args.model_id,

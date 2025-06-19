@@ -8,17 +8,11 @@ import torch
 import transformers
 from PIL import Image
 from torch.utils.data import Dataset
+from torch.nn.utils.rnn import pad_sequence
 from src.dataset.sft_dataset import SupervisedDataset
 
 from src.constants import IGNORE_INDEX
 
-from .utils import (
-    expand2square,
-    load_video,
-    preprocess,
-    preprocess_multimodal,
-    rank0_print,
-)
 
 from src.params import DataArguments
 
@@ -41,6 +35,7 @@ class SingleDataset(SupervisedDataset):
             model_id=model_id,
             padding=padding,
         )
+        self.list_data_dict = self.list_data_dict[:24]
 
 
     def __len__(self):
@@ -53,10 +48,11 @@ class SingleDataset(SupervisedDataset):
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         sources = self.list_data_dict[i]
+        print(sources)
         data_dict = super(SingleDataset, self).__getitem__(i)
-        sources_org = copy.deepcopy(sources)
-        data_dict["task_type"] = sources_org[i].get("task_type", "score")
-        data_dict["level_probs"] = sources_org[i].get("level_probs", [-10000] * 5)
+        # sources_org = copy.deepcopy(sources)
+        data_dict["task_type"] = sources.get("task_type", "score")
+        data_dict["level_probs"] = sources.get("level_probs", [-10000] * 5)
 
         return data_dict
     
@@ -118,17 +114,17 @@ class DataCollatorForSupervisedDataset(object):
 
         if len(batch_second_per_grid_ts) > 0:
             data_dict["second_per_grid_ts"] = batch_second_per_grid_ts
-        data_dict["task_types"] = [example["task_type"] for example in examples]
         data_dict["level_probs"] = torch.tensor([example["level_probs"] for example in examples])
 
         return data_dict
 
 
 def make_single_data_module(
-    model_id, processor: transformers.ProcessorMixin, data_args
+    model_id, processor: transformers.ProcessorMixin, data_args: DataArguments
 ) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
     train_dataset = SingleDataset(
+        data_path=data_args.data_path,
         processor=processor,
         data_args=data_args,
         model_id=model_id,
