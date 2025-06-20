@@ -7,7 +7,7 @@ from transformers import Qwen2_5_VLForConditionalGeneration
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VLCausalLMOutputWithPast,
 )
-from transformers.utils import auto_docstring
+#from transformers.utils import auto_docstring
 
 
 class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
@@ -17,7 +17,7 @@ class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
         self.level_ids = level_ids
         self.level_prefix = level_prefix
 
-    @auto_docstring
+    #@auto_docstring
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -37,7 +37,7 @@ class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
         rope_deltas: Optional[torch.LongTensor] = None,
         cache_position: Optional[torch.LongTensor] = None,
         second_per_grid_ts: Optional[torch.Tensor] = None,
-        use_softkl_loss: Optional[bool] = None,
+        use_softkl_loss: Optional[bool] = True,
         level_probs: Optional[torch.Tensor] = None,
     ) -> Union[Tuple, Qwen2_5_VLCausalLMOutputWithPast]:
         r"""
@@ -91,7 +91,6 @@ class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "The image shows a street scene with a red stop sign in the foreground. In the background, there is a large red gate with Chinese characters ..."
         ```"""
-
         output_attentions = (
             output_attentions
             if output_attentions is not None
@@ -105,12 +104,7 @@ class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
         return_dict = (
             return_dict if return_dict is not None else self.config.use_return_dict
         )
-        print(
-            f"input_ids: {input_ids.shape}\n\n"
-            f"pixel_values: {pixel_values.shape}\n\n"
-            f"image_grid_thw: {image_grid_thw.shape}\n\n"
-            f"attention_mask: {attention_mask.shape}\n\n"
-        )
+
         outputs = self.model(
             input_ids=input_ids,
             pixel_values=pixel_values,
@@ -132,12 +126,11 @@ class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
         hidden_states = outputs[0]
         logits = self.lm_head(hidden_states)
 
-        loss_kl = None
+        loss_kl = None    
         if use_softkl_loss and labels is not None:
             loss_kl, idx_level_label, idx_level_logit = self.softkl_loss(
                 logits, labels, level_probs
             )
-
             def del_elements(source, idx):
                 """source: [B, N] / [B, N, V],
                 idx: [B, ] with the value range [0, N-1]"""
@@ -173,11 +166,13 @@ class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
 
+        print(f"loss: {loss}, loss_kl: {loss_kl}, self.weight_softkl: {self.weight_softkl}")
+        loss = loss + self.weight_softkl * loss_kl
+
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
-        print(f"loss: {loss}, loss_kl: {loss_kl}, self.weight_softkl: {self.weight_softkl}")
-        loss = loss + self.weight_softkl * loss_kl
+        
         return Qwen2_5_VLCausalLMOutputWithPast(
             loss=loss,
             logits=logits,

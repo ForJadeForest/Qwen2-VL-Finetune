@@ -8,7 +8,6 @@ from src.dataset import make_supervised_data_module
 from src.params import DataArguments, ModelArguments, TrainingArguments
 from train.train_utils import get_peft_state_maybe_zero_3, get_peft_state_non_lora_maybe_zero_3, safe_save_model_for_hf_trainer
 import pathlib
-from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl, apply_liger_kernel_to_qwen2_5_vl
 from monkey_patch_forward import replace_qwen2_5_with_mixed_modality_forward, replace_qwen_2_with_mixed_modality_forward
 
 local_rank = None
@@ -64,20 +63,6 @@ def train():
         (ModelArguments, DataArguments, TrainingArguments))
     
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    use_liger = training_args.use_liger
-    if "Qwen2.5" in model_args.model_id:
-        # It monkey patches the forward to handle mixed modality inputs.
-        # replace_qwen2_5_with_mixed_modality_forward(use_liger=use_liger)
-        # This is becuase mixed-modality training monkey-patches the model forward method.
-        if use_liger:
-            apply_liger_kernel_to_qwen2_5_vl(fused_linear_cross_entropy=False)
-    else:
-        # It monkey patches the forward to handle mixed modality inputs.
-        replace_qwen_2_with_mixed_modality_forward(use_liger=use_liger)
-        # This is becuase mixed-modality training monkey-patches the model forward method.
-        if use_liger:
-            apply_liger_kernel_to_qwen2_vl(fused_linear_cross_entropy=False)
-    
 
     if training_args.lora_enable and not training_args.freeze_llm:
         raise ValueError("If `lora_enable` is True, `freeze_llm` must also be True.")
@@ -122,15 +107,13 @@ def train():
         if training_args.train_deqa:
             from src.models.qwen25_vl_deqa import Qwen2_5_VLForDEQA
             assert training_args.level_prefix is not None and training_args.level_names is not None
-
+            level_ids = []
             level_prefix = processor.tokenizer(training_args.level_prefix).input_ids[1:]
             for level_name in training_args.level_names:
-                level_id = processor.tokenizer(level_name)["input_ids"]
-                print(processor.tokenizer.decode(level_id, skip_special_tokens=False))
-                print(f"level_id: {level_id}, level_name: {level_name}")
+                level_id = processor.tokenizer(" "+level_name)["input_ids"]
                 assert len(level_id) == 1, f"level_id: {level_id}, level_name: {level_name}"
-            level_ids = [id_[0] for id_ in processor.tokenizer(training_args.level_names).input_ids]
-            print(f"level_ids: {level_ids}, {processor.tokenizer.decode(level_ids, skip_special_tokens=False)}")
+                level_ids.append(level_id[0])
+            
             model = Qwen2_5_VLForDEQA.from_pretrained(
                 model_args.model_id,
                 torch_dtype=compute_dtype,

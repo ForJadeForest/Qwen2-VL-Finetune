@@ -35,7 +35,6 @@ class SingleDataset(SupervisedDataset):
             model_id=model_id,
             padding=padding,
         )
-        self.list_data_dict = self.list_data_dict[:24]
 
 
     def __len__(self):
@@ -48,10 +47,7 @@ class SingleDataset(SupervisedDataset):
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         sources = self.list_data_dict[i]
-        print(sources)
         data_dict = super(SingleDataset, self).__getitem__(i)
-        # sources_org = copy.deepcopy(sources)
-        data_dict["task_type"] = sources.get("task_type", "score")
         data_dict["level_probs"] = sources.get("level_probs", [-10000] * 5)
 
         return data_dict
@@ -88,11 +84,11 @@ class DataCollatorForSupervisedDataset(object):
                 batch_second_per_grid_ts.extend(example["second_per_grid_ts"])
         
         input_ids = pad_sequence(
-            batch_input_ids, padding_side='right', padding_value=self.pad_token_id
+            batch_input_ids, padding_side='right', padding_value=self.pad_token_id, batch_first=True
         )
-
+        
         attention_mask = input_ids != self.pad_token_id
-        labels = pad_sequence(batch_label_ids, padding_side='right', padding_value=IGNORE_INDEX)
+        labels = pad_sequence(batch_label_ids, padding_side='right', padding_value=IGNORE_INDEX, batch_first=True)
 
         data_dict = {
             'input_ids': input_ids,

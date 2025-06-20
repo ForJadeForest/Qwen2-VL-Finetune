@@ -9,8 +9,6 @@ from trl import GRPOConfig as GRPOConfigTRL
 @dataclass
 class ModelArguments:
     model_id: Optional[str] = field(default="Qwen/Qwen2-VL-7B-Instruct")
-    
-
 
 @dataclass
 class TrainingArguments(HFTrainingArguments):
