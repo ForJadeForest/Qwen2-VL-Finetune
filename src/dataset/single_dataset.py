@@ -120,7 +120,7 @@ def make_single_data_module(
 ) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
     train_dataset = SingleDataset(
-        data_path=data_path if data_path,
+        data_path=data_args.data_path,
         processor=processor,
         data_args=data_args,
         model_id=model_id,

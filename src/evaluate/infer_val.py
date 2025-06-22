@@ -23,21 +23,20 @@ def wa5(logits, token_ids):
     # Only softmax the level logits
     probs_level = torch.softmax(logits_level, dim=-1).to(logits.device)
     probs_all = torch.softmax(logits, dim=-1).to(logits.device)
-    # Remove print statements for cleaner output during parameter search
-    # print(
-    #     "probs_all[:, token_ids]: ",
-    #     probs_all[:, token_ids],
-    #     probs_all[:, token_ids].sum(dim=-1),
-    # )
-    # print("probs_level: ", probs_level, probs_level.sum(dim=-1))
+    print(
+        "probs_all[:, token_ids]: ",
+        probs_all[:, token_ids],
+        probs_all[:, token_ids].sum(dim=-1),
+    )
+    print("probs_level: ", probs_level, probs_level.sum(dim=-1))
 
     weights = torch.tensor([5.0, 4.0, 3.0, 2.0, 1.0], device=logits.device, dtype=dtype)
     score_target = (probs_level * weights).sum(dim=-1)
-    # print("score_target: ", score_target)
+    print("score_target: ", score_target)
     return score_target
 
 
-def process_batch(batch_items, processor, prompt_template, image_folder):
+def process_batch(batch_items, processor, prompt_template):
     """Process a single batch of items"""
     try:
         # Create batch messages
@@ -49,7 +48,7 @@ def process_batch(batch_items, processor, prompt_template, image_folder):
                     "content": [
                         {
                             "type": "image",
-                            "image": f"{image_folder}/{item['image']}",
+                            "image": f"data/DIQA/val/res/{item['image']}",
                         },
                         {"type": "text", "text": prompt_template},
                     ],
@@ -83,7 +82,7 @@ def process_batch(batch_items, processor, prompt_template, image_folder):
         return None
 
 
-def process_gpu_chunk(gpu_id, data_chunk, result_queue, model_path, image_folder, prompt_template):
+def process_gpu_chunk(gpu_id, data_chunk, result_queue):
     """Process a chunk of data on a specific GPU"""
     try:
         # Set device
@@ -92,11 +91,11 @@ def process_gpu_chunk(gpu_id, data_chunk, result_queue, model_path, image_folder
         
         # Initialize model and processor for this GPU
         processor = AutoProcessor.from_pretrained(
-            model_path, trust_remote_code=True
+            "output/deqa/checkpoint-110", trust_remote_code=True
         )
         processor.tokenizer.padding_side = 'left'
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            model_path,
+            "output/deqa/checkpoint-110",
             device_map=device,
             trust_remote_code=True,
             torch_dtype=torch.bfloat16,
@@ -120,7 +119,7 @@ def process_gpu_chunk(gpu_id, data_chunk, result_queue, model_path, image_folder
             batch_items = data_chunk[start_idx:end_idx]
             
             # Process current batch
-            inputs = process_batch(batch_items, processor, prompt_template, image_folder)
+            inputs = process_batch(batch_items, processor, "Could you evaluate the quality of this image?")
             if inputs is None:
                 continue
                 
@@ -137,15 +136,12 @@ def process_gpu_chunk(gpu_id, data_chunk, result_queue, model_path, image_folder
                 
                 # Store results for this batch
                 for i, score in enumerate(scores):
-                    result_item = {
-                        "image": batch_items[i]["image"],
-                        "predicted_score": score.item(),
-                    }
-                    # Add ground truth if available
-                    if "gt_score_norm" in batch_items[i]:
-                        result_item["actual_score"] = batch_items[i]["gt_score_norm"]
-                    
-                    results.append(result_item)
+                    results.append(
+                        {
+                            "image": batch_items[i]["image"],
+                            "overall": score.item(),
+                        }
+                    )
             
             # Clear memory
             del inputs, outputs, logits, scores
@@ -164,20 +160,12 @@ def main(args):
     # Initialize timing
     start_time = time.time()
     
-    # Load data based on file extension
-    data = []
-    if args.val_data_path.endswith('.json'):
-        with open(args.val_data_path) as f:
-            data = json.load(f)
-    elif args.val_data_path.endswith('.jsonl'):
-        with open(args.val_data_path) as f:
-            for line in f:
-                data.append(json.loads(line.strip()))
-    else:
-        raise ValueError(f"Unsupported file format: {args.val_data_path}")
+    # Load data
+    with open("data/val_file/val.json") as f:
+        data = json.load(f)
     
-    # Split data for multiple GPUs
-    num_gpus = args.num_gpus
+    # Split data for 8 GPUs
+    num_gpus = 8
     chunk_size = len(data) // num_gpus
     data_chunks = [
         data[i * chunk_size : (i + 1) * chunk_size if i < num_gpus - 1 else len(data)]
@@ -192,7 +180,7 @@ def main(args):
     for gpu_id in range(num_gpus):
         p = Process(
             target=process_gpu_chunk,
-            args=(gpu_id, data_chunks[gpu_id], result_queue, args.model_path, args.image_folder, args.prompt)
+            args=(gpu_id, data_chunks[gpu_id], result_queue)
         )
         processes.append(p)
         p.start()
@@ -207,37 +195,15 @@ def main(args):
         p.join()
     
     # Save results
-    os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
-    with open(args.output_path, "w") as f:
+    with open("./data/2epoch_qwen_deqa.json", "w") as f:
         json.dump(all_results, f, indent=2)
 
     print(f"Evaluation completed in {(time.time()-start_time)/60:.2f} minutes")
-    print(f"Results saved to: {args.output_path}")
-    print(f"Total samples processed: {len(all_results)}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="DeQA Model Inference with Multi-GPU Support")
-    
-    # Model and data paths
-    parser.add_argument("--model_path", type=str, required=True,
-                       help="Path to the model checkpoint")
-    parser.add_argument("--val_data_path", type=str, required=True,
-                       help="Path to validation data (.json or .jsonl)")
-    parser.add_argument("--image_folder", type=str, required=True,
-                       help="Path to image folder")
-    parser.add_argument("--output_path", type=str, required=True,
-                       help="Path to save evaluation results")
-    
-    # Inference parameters
-    parser.add_argument("--prompt", type=str, 
-                       default="Could you evaluate the quality of this image?",
-                       help="Prompt template for evaluation")
-    parser.add_argument("--num_gpus", type=int, default=8,
-                       help="Number of GPUs to use for inference")
-    
+    parser = argparse.ArgumentParser()
     args = parser.parse_args()
-    
     # Set multiprocessing start method
     torch.multiprocessing.set_start_method('spawn')
     main(args)

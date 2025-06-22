@@ -32,10 +32,13 @@ class SupervisedDataset(Dataset):
         padding=True,
     ):
         super(SupervisedDataset, self).__init__()
-        if isinstance(data_path, str):
+        if isinstance(data_path, str) and data_path.endswith(".jsonl"):
+            list_data_dict = [json.loads(line) for line in open(data_path, "r")]
+        elif isinstance(data_path, str) and data_path.endswith(".json"):
             list_data_dict = json.load(open(data_path, "r"))
         else:
-            list_data_dict = data_path
+            raise ValueError(f"Unsupported data path: {data_path}")
+            # list_data_dict = data_path
 
         self.model_id = model_id
         self.processor = processor
