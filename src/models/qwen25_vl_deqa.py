@@ -7,7 +7,7 @@ from transformers import Qwen2_5_VLForConditionalGeneration
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VLCausalLMOutputWithPast,
 )
-#from transformers.utils import auto_docstring
+
 
 
 class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
@@ -17,7 +17,7 @@ class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
         self.level_ids = level_ids
         self.level_prefix = level_prefix
 
-    #@auto_docstring
+
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -126,11 +126,12 @@ class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
         hidden_states = outputs[0]
         logits = self.lm_head(hidden_states)
 
-        loss_kl = None    
+        loss_kl = None
         if use_softkl_loss and labels is not None:
             loss_kl, idx_level_label, idx_level_logit = self.softkl_loss(
                 logits, labels, level_probs
             )
+
             def del_elements(source, idx):
                 """source: [B, N] / [B, N, V],
                 idx: [B, ] with the value range [0, N-1]"""
@@ -149,7 +150,7 @@ class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
             labels_del = del_elements(labels, idx_level_label)
             logits_del = del_elements(logits, idx_level_logit)
 
-        loss = None
+        loss = 0.0
         if labels is not None:
             # Shift so that tokens < n predict n
             if loss_kl is None:
@@ -166,13 +167,16 @@ class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
 
-        print(f"loss: {loss}, loss_kl: {loss_kl}, self.weight_softkl: {self.weight_softkl}")
-        loss = loss + self.weight_softkl * loss_kl
+        if loss_kl is not None:
+            print(
+                f"loss: {loss}, loss_kl: {loss_kl}, self.weight_softkl: {self.weight_softkl}"
+            )
+            loss = loss + self.weight_softkl * loss_kl
 
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
-        
+
         return Qwen2_5_VLCausalLMOutputWithPast(
             loss=loss,
             logits=logits,
@@ -188,10 +192,15 @@ class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
         idx_prefix_label = find_prefix(labels, level_prefix)  # B
         idx_level_label = idx_prefix_label + level_prefix.shape[0]
 
+        weights = torch.tensor(
+            [5.0, 4.0, 3.0, 2.0, 1.0], device=logits.device, dtype=logits.dtype
+        )
+        final_score = (level_probs * weights).sum(dim=-1).detach()
+
         level_ids_label = labels[torch.arange(batch_size), idx_level_label]
+
         for level_id in level_ids_label:
             assert level_id in self.level_ids
-
         # After padding in prepare_inputs_labels_for_multimodal(), the length of labels will be the same as logits
         assert logits.shape[1] == labels.shape[1]
         idx_level_logit = idx_level_label - 1
@@ -199,13 +208,36 @@ class Qwen2_5_VLForDEQA(Qwen2_5_VLForConditionalGeneration):
             torch.arange(batch_size), idx_level_logit
         ].contiguous()  # [B, V]
 
-        preds = torch.softmax(logits_level_ids, dim=1)  # [B, V]
-        target = torch.zeros_like(preds)  # [B, V]
-        target[:, self.level_ids] = level_probs
-        target = target.detach()
+        # Use log_softmax for numerical stability
+        log_preds = F.log_softmax(logits_level_ids, dim=1)  # [B, V]
 
-        pred_log = torch.log(preds)
-        loss_kl = F.kl_div(pred_log, target, reduction="batchmean")
+        # Gather the log probabilities of the target levels
+        log_preds_at_levels = log_preds[:, self.level_ids]  # [B, K]
+
+        # Manually compute KL divergence to avoid log(0) on the full target vector.
+        # KL(p || q) = sum(p * (log p - log q))
+        # We assume level_probs > 0. A small epsilon is added for stability.
+        log_level_probs = torch.log(level_probs.clamp(min=1e-9))
+
+        # The F.kl_div function expects input=log_q, target=p.
+        # The loss is sum(p * (log p - log q)).
+        # PyTorch's kl_div with reduction='batchmean' divides by batch_size.
+        # We will compute sum over distribution, and then mean over batch.
+        kl_div_per_element = level_probs * (log_level_probs - log_preds_at_levels)
+        loss_kl = kl_div_per_element.sum(dim=-1).mean()
+
+        assert not torch.isnan(loss_kl)
+
+        pred_score = (log_preds_at_levels.exp() * weights).sum(dim=-1).detach()
+        # MSE metric:
+        mse_loss = F.mse_loss(pred_score, final_score)
+        print(
+            f"RANK: {torch.distributed.get_rank()}, "
+            f"Predicted score: {pred_score.item()}, "
+            f"GT score: {final_score.item()}, "
+            f"MSE loss: {mse_loss.item()}"
+        )
+
         return loss_kl, idx_level_label, idx_level_logit
 
 
