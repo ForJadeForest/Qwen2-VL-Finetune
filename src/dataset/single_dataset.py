@@ -120,12 +120,20 @@ def make_single_data_module(
 ) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
     train_dataset = SingleDataset(
-        data_path=data_args.data_path,
+        data_path=data_path if data_path,
         processor=processor,
         data_args=data_args,
         model_id=model_id,
     )
     data_collator = DataCollatorForSupervisedDataset(pad_token_id=processor.tokenizer.pad_token_id)
+    eval_dataset = None
+    if data_args.val_path is not None:
+        eval_dataset = SingleDataset(
+            data_path=data_args.val_path,
+            processor=processor,
+            data_args=data_args,
+            model_id=model_id,
+        )
     return dict(
-        train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator
+        train_dataset=train_dataset, eval_dataset=eval_dataset, data_collator=data_collator
     )

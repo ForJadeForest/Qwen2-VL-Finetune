@@ -269,8 +269,11 @@ def train():
         from src.dataset.single_dataset import make_single_data_module
 
         data_module = make_single_data_module(
-            model_id=model_args.model_id, processor=processor, data_args=data_args
+            model_id=model_args.model_id,
+            processor=processor,
+            data_args=data_args,
         )
+
     else:
         data_module = make_supervised_data_module(
             model_id=model_args.model_id, processor=processor, data_args=data_args
