@@ -36,124 +36,126 @@ def wa5(logits, token_ids):
     return score_target
 
 
-def process_batch(batch_items, processor, prompt_template):
+def process_batch(batch_items, processor, prompt_template, image_folder):
     """Process a single batch of items"""
-    try:
-        # Create batch messages
-        messages = []
-        for item in batch_items:
-            msg = [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "image": f"data/DIQA/val/res/{item['image']}",
-                        },
-                        {"type": "text", "text": prompt_template},
-                    ],
-                },
-                {"role": "assistant", "content": "The quality of the image is"},
-            ]
-            messages.append(msg)
+    # try:
+    # Create batch messages
+    messages = []
+    for item in batch_items:
+        msg = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt_template},
+                    {
+                        "type": "image",
+                        "image": os.path.join(image_folder, item['image']),
+                    },
+                ],
+            },
+            {"role": "assistant", "content": "The quality of the image is"},
+        ]
+        messages.append(msg)
 
-        # Process batch
-        texts = [
-            processor.apply_chat_template(
-                msg, tokenize=False, add_generation_prompt=False
+    # Process batch
+    texts = [
+        processor.apply_chat_template(
+            msg, tokenize=False, add_generation_prompt=False
+        )
+        for msg in messages
+    ]
+    texts = [
+        text[:-11] if text.endswith("<|im_end|>\n") else text for text in texts
+    ]
+    print(texts[0])
+    
+    image_inputs, video_inputs = process_vision_info(messages)
+    inputs = processor(
+        text=texts,
+        images=image_inputs,
+        videos=video_inputs,
+        padding=True,
+        return_tensors="pt",
+    )
+    return inputs
+# except Exception as e:
+#     print(f"Error processing batch: {str(e)}")
+#     return None
+
+
+def process_gpu_chunk(gpu_id, data_chunk, result_queue, model_path, image_folder, prompt):
+# """Process a chunk of data on a specific GPU"""
+# try:
+    # Set device
+    torch.cuda.set_device(gpu_id)
+    device = f"cuda:{gpu_id}"
+    
+    # Initialize model and processor for this GPU
+    processor = AutoProcessor.from_pretrained(
+        model_path, trust_remote_code=True
+    )
+    processor.tokenizer.padding_side = 'left'
+    from transformers import Qwen2_5_VLForConditionalGeneration
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        model_path,
+        device_map=device,
+        trust_remote_code=True,
+        torch_dtype=torch.bfloat16,
+        attn_implementation="flash_attention_2",
+    )
+    
+    # Token IDs for scoring
+    token_ids = {
+        k: processor.tokenizer.encode(k)[-1]
+        for k in [" five", " four", " three", " two", " one"]
+    }
+    
+    # Process batches
+    batch_size = 1
+    results = []
+    num_batches = (len(data_chunk) + batch_size - 1) // batch_size
+    
+    for batch_idx in tqdm(range(num_batches), desc=f"GPU {gpu_id} processing"):
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, len(data_chunk))
+        batch_items = data_chunk[start_idx:end_idx]
+        
+        # Process current batch
+        inputs = process_batch(batch_items, processor, prompt, image_folder)
+        if inputs is None:
+            continue
+            
+        inputs = inputs.to(device)
+        with torch.no_grad():
+            outputs = model(
+                input_ids=inputs.input_ids,
+                pixel_values=inputs.pixel_values,
+                image_grid_thw=inputs.image_grid_thw,
+                attention_mask=inputs.attention_mask,
             )
-            for msg in messages
-        ]
-        texts = [
-            text[:-11] if text.endswith("<|im_end|>\n") else text for text in texts
-        ]
-        
-        image_inputs, video_inputs = process_vision_info(messages)
-        inputs = processor(
-            text=texts,
-            images=image_inputs,
-            videos=video_inputs,
-            padding=True,
-            return_tensors="pt",
-        )
-        return inputs
-    except Exception as e:
-        print(f"Error processing batch: {str(e)}")
-        return None
-
-
-def process_gpu_chunk(gpu_id, data_chunk, result_queue):
-    """Process a chunk of data on a specific GPU"""
-    try:
-        # Set device
-        torch.cuda.set_device(gpu_id)
-        device = f"cuda:{gpu_id}"
-        
-        # Initialize model and processor for this GPU
-        processor = AutoProcessor.from_pretrained(
-            "output/deqa/checkpoint-110", trust_remote_code=True
-        )
-        processor.tokenizer.padding_side = 'left'
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            "output/deqa/checkpoint-110",
-            device_map=device,
-            trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
-            attn_implementation="flash_attention_2",
-        )
-        
-        # Token IDs for scoring
-        token_ids = {
-            k: processor.tokenizer.encode(k)[-1]
-            for k in [" five", " four", " three", " two", " one"]
-        }
-        
-        # Process batches
-        batch_size = 2
-        results = []
-        num_batches = (len(data_chunk) + batch_size - 1) // batch_size
-        
-        for batch_idx in tqdm(range(num_batches), desc=f"GPU {gpu_id} processing"):
-            start_idx = batch_idx * batch_size
-            end_idx = min(start_idx + batch_size, len(data_chunk))
-            batch_items = data_chunk[start_idx:end_idx]
+            logits = outputs.logits[:, -1]
+            scores = wa5(logits, token_ids)
             
-            # Process current batch
-            inputs = process_batch(batch_items, processor, "Could you evaluate the quality of this image?")
-            if inputs is None:
-                continue
-                
-            inputs = inputs.to(device)
-            with torch.no_grad():
-                outputs = model(
-                    input_ids=inputs.input_ids,
-                    pixel_values=inputs.pixel_values,
-                    image_grid_thw=inputs.image_grid_thw,
-                    attention_mask=inputs.attention_mask,
+            # Store results for this batch
+            for i, score in enumerate(scores):
+                results.append(
+                    {
+                        "image": batch_items[i]["image"],
+                        "score": score.item(),
+                    }
                 )
-                logits = outputs.logits[:, -1]
-                scores = wa5(logits, token_ids)
-                
-                # Store results for this batch
-                for i, score in enumerate(scores):
-                    results.append(
-                        {
-                            "image": batch_items[i]["image"],
-                            "overall": score.item(),
-                        }
-                    )
-            
-            # Clear memory
-            del inputs, outputs, logits, scores
-            torch.cuda.empty_cache()
-            gc.collect()
-            
-        # Put results in queue
-        result_queue.put(results)
         
-    except Exception as e:
-        print(f"Error in GPU {gpu_id}: {str(e)}")
-        result_queue.put([])
+        # Clear memory
+        del inputs, outputs, logits, scores
+        torch.cuda.empty_cache()
+        gc.collect()
+        
+    # Put results in queue
+    result_queue.put(results)
+        
+    # except Exception as e:
+    #     print(f"Error in GPU {gpu_id}: {str(e)}")
+    #     result_queue.put([])
 
 
 def main(args):
@@ -161,11 +163,18 @@ def main(args):
     start_time = time.time()
     
     # Load data
-    with open("data/val_file/val.json") as f:
+    with open(args.data_path) as f:
         data = json.load(f)
     
-    # Split data for 8 GPUs
-    num_gpus = 8
+    
+    print(f"Loaded {len(data)} samples from {args.data_path}")
+    print(f"Using model: {args.model_path}")
+    print(f"Image folder: {args.image_folder}")
+    print(f"Prompt: {args.prompt}")
+    print(f"Number of GPUs: {args.num_gpus}")
+    
+    # Split data for multiple GPUs
+    num_gpus = args.num_gpus
     chunk_size = len(data) // num_gpus
     data_chunks = [
         data[i * chunk_size : (i + 1) * chunk_size if i < num_gpus - 1 else len(data)]
@@ -180,7 +189,7 @@ def main(args):
     for gpu_id in range(num_gpus):
         p = Process(
             target=process_gpu_chunk,
-            args=(gpu_id, data_chunks[gpu_id], result_queue)
+            args=(gpu_id, data_chunks[gpu_id], result_queue, args.model_path, args.image_folder, args.prompt)
         )
         processes.append(p)
         p.start()
@@ -194,16 +203,45 @@ def main(args):
     for p in processes:
         p.join()
     
+    # Sort results by image name to ensure consistent order
+    all_results.sort(key=lambda x: x['image'])
+    
     # Save results
-    with open("./data/2epoch_qwen_deqa.json", "w") as f:
+    with open(args.output_path, "w") as f:
         json.dump(all_results, f, indent=2)
 
     print(f"Evaluation completed in {(time.time()-start_time)/60:.2f} minutes")
+    print(f"Results saved to: {args.output_path}")
+    print(f"Total samples processed: {len(all_results)}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="DeQA Score Inference")
+    parser.add_argument("--model_path", type=str, required=True, help="Path to the model checkpoint")
+    parser.add_argument("--data_path", type=str, required=True, help="Path to the data JSON file")
+    parser.add_argument("--image_folder", type=str, required=True, help="Path to the image folder")
+    parser.add_argument("--output_path", type=str, required=True, help="Path to save the output JSON file")
+    parser.add_argument("--prompt", type=str, default="Could you evaluate the quality of this image?", help="Prompt for inference")
+    parser.add_argument("--num_gpus", type=int, default=8, help="Number of GPUs to use")
+    
     args = parser.parse_args()
+    
+    # Validate arguments
+    if not os.path.exists(args.model_path):
+        print(f"Error: Model path does not exist: {args.model_path}")
+        exit(1)
+    
+    if not os.path.exists(args.data_path):
+        print(f"Error: Data path does not exist: {args.data_path}")
+        exit(1)
+        
+    if not os.path.exists(args.image_folder):
+        print(f"Error: Image folder does not exist: {args.image_folder}")
+        exit(1)
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
+    
     # Set multiprocessing start method
-    torch.multiprocessing.set_start_method('spawn')
+    torch.multiprocessing.set_start_method('spawn', force=True)
     main(args)
