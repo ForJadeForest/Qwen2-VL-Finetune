@@ -166,5 +166,7 @@ tf-logs
 tmp/
 scripts_tmp/
 logs/*.log
-
+temp/
+wandb/
 testing.ipynb
+scripts/train_local/
