@@ -9,9 +9,8 @@ from transformers import (
     HfArgumentParser,
     Qwen2_5_VLForConditionalGeneration,
 )
-from src.trainer import QwenSFTTrainer
-from src.dataset import make_supervised_data_module
-from src.params import DataArguments, ModelArguments, TrainingArguments
+from src.trainer.deqa_trainer import QwenDeQATrainer
+from src.params import DeQATrainingArguments, DeQADataArguments, ModelArguments
 from train.train_utils import (
     get_peft_state_maybe_zero_3,
     get_peft_state_non_lora_maybe_zero_3,
@@ -75,7 +74,9 @@ def configure_llm(model, training_args):
 def train():
     global local_rank
 
-    parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
+    parser = HfArgumentParser(
+        (ModelArguments, DeQADataArguments, DeQATrainingArguments)
+    )
 
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
@@ -130,16 +131,35 @@ def train():
 
     processor = AutoProcessor.from_pretrained(model_args.model_id)
     if "Qwen2.5" in model_args.model_id:
+
+        assert (
+            training_args.level_prefix is not None
+            and training_args.level_names is not None
+        )
+        level_ids = []
+        level_prefix = processor.tokenizer(training_args.level_prefix).input_ids
+        for level_name in training_args.level_names:
+            level_id = processor.tokenizer(" " + level_name)["input_ids"]
+            assert len(level_id) == 1, f"level_id: {level_id}, level_name: {level_name}"
+            level_ids.append(level_id[0])
+        print("[DEBUG] level_ids: ", level_ids)
+        print("[DEBUG] level_prefix: ", level_prefix)
+
+        print("[DEBUG] level_ids decoded: ", processor.tokenizer.decode(level_ids))
+        print(
+            "[DEBUG] level_prefix decoded: ",
+            processor.tokenizer.decode(level_prefix),
+        )
+
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_args.model_id,
             torch_dtype=compute_dtype,
             attn_implementation=(
-                "flash_attention_2"
-                if not training_args.disable_flash_attn2
-                else "sdpa"
+                "flash_attention_2" if not training_args.disable_flash_attn2 else "sdpa"
             ),
             **bnb_model_from_pretrained_args,
         )
+
     else:
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_args.model_id,
@@ -149,6 +169,7 @@ def train():
             ),
             **bnb_model_from_pretrained_args,
         )
+        assert False
 
     model.config.use_cache = False
     model_to_configure = model
@@ -228,12 +249,34 @@ def train():
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
 
-    data_module = make_supervised_data_module(
-        model_id=model_args.model_id, processor=processor, data_args=data_args
-    )
+    if data_args.use_ori_image:
+        print("Using double dataset")
+        from src.dataset.double_dataset import make_double_data_module
 
-    trainer = QwenSFTTrainer(
-        model=model, processing_class=processor, args=training_args, **data_module
+        data_module = make_double_data_module(
+            model_id=model_args.model_id,
+            processor=processor,
+            data_args=data_args,
+        )
+    else:
+        print("Using single dataset")
+        from src.dataset.single_dataset import make_single_data_module
+
+        data_module = make_single_data_module(
+            model_id=model_args.model_id,
+            processor=processor,
+            data_args=data_args,
+        )
+
+    trainer = QwenDeQATrainer(
+        model=model,
+        processing_class=processor,
+        args=training_args,
+        **data_module,
+        level_prefix=level_prefix,
+        level_ids=level_ids,
+        use_softkl_loss=training_args.use_softkl_loss,
+        weight_softkl=training_args.weight_softkl,
     )
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):

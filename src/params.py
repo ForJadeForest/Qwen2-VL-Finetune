@@ -10,12 +10,6 @@ class ModelArguments:
 
 @dataclass
 class TrainingArguments(HFTrainingArguments):
-    level_prefix: str = field(default="")
-    level_names: list[str] = field(default_factory=lambda: [])
-    train_deqa: bool = field(default=False)
-    softkl_loss: bool = field(default=False)
-    weight_softkl: float = field(default=1.0)
-
     cache_dir: Optional[str] = field(default=None)
     optim: str = field(default="adamw_torch")
     adam_beta1: float = field(default=0.9)
@@ -61,6 +55,15 @@ class TrainingArguments(HFTrainingArguments):
     num_lora_modules: int = -1
     use_liger: bool = True
 
+@dataclass
+class DeQATrainingArguments(TrainingArguments):
+    level_prefix: str = field(default="")
+    level_names: list[str] = field(default_factory=lambda: [])
+    train_deqa: bool = field(default=False)
+    use_softkl_loss: bool = field(default=False)
+    weight_softkl: float = field(default=1.0)
+
+
 
 @dataclass
 class DataArguments:
@@ -81,3 +84,10 @@ class DataArguments:
     video_resized_width: int = field(default=None)
     video_resized_height: int = field(default=None)
     fps: float = 1.0
+
+@dataclass
+class DeQADataArguments(DataArguments):
+    ori_image_folder: str = field(default=None)
+    res_image_folder: str = field(default=None)
+    use_ori_image: bool = field(default=True)
+    image_folder: str = field(default=None)
