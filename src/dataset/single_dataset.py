@@ -28,6 +28,8 @@ class SingleDataset(SupervisedDataset):
         model_id,
         padding=True,
     ):
+        assert data_args.image_folder is not None, "image_folder must be provided"
+
         super(SingleDataset, self).__init__(
             data_path=data_path,
             processor=processor,
@@ -35,7 +37,6 @@ class SingleDataset(SupervisedDataset):
             model_id=model_id,
             padding=padding,
         )
-
 
     def __len__(self):
         return len(self.list_data_dict)
@@ -51,9 +52,9 @@ class SingleDataset(SupervisedDataset):
         data_dict["level_probs"] = sources.get("level_probs", [-10000] * 5)
 
         return data_dict
-    
 
-class DataCollatorForSupervisedDataset(object):
+
+class DataCollatorForSingleDataset(object):
     """Collate examples for supervised fine-tuning."""
 
     def __init__(self, pad_token_id: int):
@@ -67,7 +68,7 @@ class DataCollatorForSupervisedDataset(object):
         batch_video_thw = []
         batch_image_thw = []
         batch_second_per_grid_ts = []
-        
+
         for example in examples:
             keys = example.keys()
             if "pixel_values_videos" in keys:
@@ -76,24 +77,32 @@ class DataCollatorForSupervisedDataset(object):
             elif "pixel_values" in keys:
                 batch_pixel_values.append(example["pixel_values"])
                 batch_image_thw.append(example["image_grid_thw"])
-            
+
             batch_input_ids.append(example["input_ids"])
             batch_label_ids.append(example["labels"])
 
             if "second_per_grid_ts" in keys:
                 batch_second_per_grid_ts.extend(example["second_per_grid_ts"])
-        
+
         input_ids = pad_sequence(
-            batch_input_ids, padding_side='right', padding_value=self.pad_token_id, batch_first=True
+            batch_input_ids,
+            padding_side="right",
+            padding_value=self.pad_token_id,
+            batch_first=True,
         )
-        
+
         attention_mask = input_ids != self.pad_token_id
-        labels = pad_sequence(batch_label_ids, padding_side='right', padding_value=IGNORE_INDEX, batch_first=True)
+        labels = pad_sequence(
+            batch_label_ids,
+            padding_side="right",
+            padding_value=IGNORE_INDEX,
+            batch_first=True,
+        )
 
         data_dict = {
-            'input_ids': input_ids,
-            'labels': labels,
-            'attention_mask': attention_mask,
+            "input_ids": input_ids,
+            "labels": labels,
+            "attention_mask": attention_mask,
         }
 
         if len(batch_pixel_values) > 0:
@@ -110,7 +119,9 @@ class DataCollatorForSupervisedDataset(object):
 
         if len(batch_second_per_grid_ts) > 0:
             data_dict["second_per_grid_ts"] = batch_second_per_grid_ts
-        data_dict["level_probs"] = torch.tensor([example["level_probs"] for example in examples])
+        data_dict["level_probs"] = torch.tensor(
+            [example["level_probs"] for example in examples]
+        )
 
         return data_dict
 
@@ -125,7 +136,9 @@ def make_single_data_module(
         data_args=data_args,
         model_id=model_id,
     )
-    data_collator = DataCollatorForSupervisedDataset(pad_token_id=processor.tokenizer.pad_token_id)
+    data_collator = DataCollatorForSingleDataset(
+        pad_token_id=processor.tokenizer.pad_token_id
+    )
     eval_dataset = None
     if data_args.val_path is not None:
         eval_dataset = SingleDataset(
@@ -135,5 +148,7 @@ def make_single_data_module(
             model_id=model_id,
         )
     return dict(
-        train_dataset=train_dataset, eval_dataset=eval_dataset, data_collator=data_collator
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        data_collator=data_collator,
     )
